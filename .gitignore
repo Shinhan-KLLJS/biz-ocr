@@ -1,0 +1,8 @@
+data/
+.env
+*.pyc
+__pycache__/
+outputs/
+build/
+dist/
+*.zip
