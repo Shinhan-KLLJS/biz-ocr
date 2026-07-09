@@ -104,6 +104,53 @@ class BusinessRegistrationServiceTests(unittest.TestCase):
         mock_validate.assert_not_called()
 
     @patch("ocr_service.services.business_registration.validate_business_registration_fields")
+    def test_status_mode_does_not_require_opening_date(self, mock_validate):
+        # 폐업 재확인은 사업자등록번호만 보내므로 개업일자를 요구하면 안 된다.
+        mock_validate.return_value = {
+            "mode": "status",
+            "isCertificateValid": None,
+            "isRegistered": True,
+            "isActive": True,
+        }
+
+        parsed = verify_business_registration_submission(
+            {"businessRegistrationNumber": "3688803013"},
+            "status",
+        )
+
+        self.assertNotIn("error", parsed["validation"])
+        self.assertTrue(parsed["validation"]["isActive"])
+        mock_validate.assert_called_once_with({"businessRegistrationNumber": "3688803013"}, "status")
+
+    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
+    def test_status_mode_still_rejects_a_malformed_business_number(self, mock_validate):
+        parsed = verify_business_registration_submission(
+            {"businessRegistrationNumber": "368-88-03013"},
+            "status",
+        )
+
+        self.assertIn("10 digits", parsed["validation"]["error"])
+        self.assertEqual(parsed["decision"]["reasonCode"], "VALIDATION_INPUT_INCOMPLETE")
+        mock_validate.assert_not_called()
+
+    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
+    def test_status_mode_reports_a_closed_business_as_rejected(self, mock_validate):
+        mock_validate.return_value = {
+            "mode": "status",
+            "isCertificateValid": None,
+            "isRegistered": True,
+            "isActive": False,
+        }
+
+        parsed = verify_business_registration_submission(
+            {"businessRegistrationNumber": "3688803013"},
+            "status",
+        )
+
+        self.assertEqual(parsed["decision"]["status"], "rejected")
+        self.assertEqual(parsed["decision"]["reasonCode"], "INACTIVE_BUSINESS")
+
+    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
     def test_requires_advertising_fields_for_final_decision(self, mock_validate):
         mock_validate.return_value = {
             "mode": "authenticity",

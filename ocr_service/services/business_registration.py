@@ -19,6 +19,12 @@ VALIDATION_REQUIRED_FIELDS = {
 VERIFICATION_SUBMISSION_FIELDS = VALIDATION_REQUIRED_FIELDS["authenticity"]
 ADVERTISING_CLASSIFICATION_FIELDS = ("businessType", "businessItem")
 
+# data.go.kr로 보내기 전에 확인하는 필드별 형식이다. 형식 규칙이 없는 필드는 담지 않는다.
+VALIDATION_FIELD_FORMATS = {
+    "businessRegistrationNumber": (r"\d{10}", "businessRegistrationNumber must be 10 digits without separators"),
+    "openingDate": (r"\d{8}", "openingDate must be YYYYMMDD without separators"),
+}
+
 
 def analyze_business_registration(
     result: dict,
@@ -77,7 +83,7 @@ def validate_submission_if_fields_are_ready(fields: dict, validation_mode: str) 
     if missing_fields:
         return make_validation_input_error(validation_mode, missing_fields)
 
-    format_error = find_verification_format_error(fields)
+    format_error = find_verification_format_error(fields, validation_mode)
     if format_error:
         return make_validation_input_error(validation_mode, [], format_error)
 
@@ -87,11 +93,15 @@ def validate_submission_if_fields_are_ready(fields: dict, validation_mode: str) 
         return make_validation_input_error(validation_mode, [], str(exc))
 
 
-def find_verification_format_error(fields: dict) -> str | None:
-    if not re.fullmatch(r"\d{10}", str(fields.get("businessRegistrationNumber", ""))):
-        return "businessRegistrationNumber must be 10 digits without separators"
-    if not re.fullmatch(r"\d{8}", str(fields.get("openingDate", ""))):
-        return "openingDate must be YYYYMMDD without separators"
+def find_verification_format_error(fields: dict, validation_mode: str) -> str | None:
+    """해당 모드가 실제로 data.go.kr에 보내는 필드만 형식을 검사한다.
+
+    status 모드는 사업자등록번호만 보내므로 개업일자를 요구하지 않는다.
+    """
+    for key in required_validation_fields(validation_mode):
+        rule = VALIDATION_FIELD_FORMATS.get(key)
+        if rule and not re.fullmatch(rule[0], str(fields.get(key, ""))):
+            return rule[1]
     return None
 
 
@@ -144,9 +154,13 @@ def validate_if_fields_are_ready(fields: dict, validation_mode: str) -> dict:
         return make_validation_input_error(validation_mode, [], str(exc))
 
 
+def required_validation_fields(validation_mode: str) -> tuple[str, ...]:
+    """모드가 data.go.kr에 보내는 필수 필드를 돌려준다. 누락 검사와 형식 검사가 함께 쓴다."""
+    return VALIDATION_REQUIRED_FIELDS.get(validation_mode, tuple(REQUIRED_BUSINESS_FIELDS))
+
+
 def find_missing_validation_fields(fields: dict, validation_mode: str) -> list[str]:
-    required_fields = VALIDATION_REQUIRED_FIELDS.get(validation_mode, tuple(REQUIRED_BUSINESS_FIELDS))
-    return [key for key in required_fields if not fields.get(key)]
+    return [key for key in required_validation_fields(validation_mode) if not fields.get(key)]
 
 
 def normalize_validation_mode(validation_mode: str | None) -> str:
