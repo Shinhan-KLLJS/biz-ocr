@@ -9,6 +9,7 @@ from ocr_service.extractors.business_registration.business_items import (
 )
 from ocr_service.extractors.business_registration.classification import classify_advertising_business
 from ocr_service.extractors.business_registration.constants import REQUIRED_BUSINESS_FIELDS
+from ocr_service.extractors.business_registration.document_fields import extract_document_business_fields
 from ocr_service.extractors.business_registration.normalization import compact_label, normalize_date
 from ocr_service.extractors.business_registration.template_fields import extract_template_business_fields
 from ocr_service.extractors.business_registration.text_fields import (
@@ -58,9 +59,11 @@ def parse_business_registration_result(result: dict) -> dict:
     text = extract_text(result)
     parsed = parse_business_registration_text(text)
     # Template OCR 명명 필드는 사용자가 직접 정의한 값이므로 일반 텍스트 추출보다 우선한다.
+    # Document OCR 특화 필드는 가장 구조화된 응답이므로 최종 우선순위로 병합한다.
     fields = {
         **parsed["fields"],
         **extract_template_business_fields(result),
+        **extract_document_business_fields(result),
     }
 
     fields = select_required_business_fields(fields)

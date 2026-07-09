@@ -7,10 +7,15 @@ import sys
 from pathlib import Path
 
 from ocr_service.config import configure_stdio, load_dotenv
+from ocr_service.documents import DocumentSource, validate_document_size
 from ocr_service.extractors.template import extract_template_fields, extract_text
-from ocr_service.ncloud_client import call_ocr, validate_file_size
+from ocr_service.ncloud_client import call_business_license_ocr, call_ocr
 from ocr_service.responses.business_registration import build_business_registration_response
-from ocr_service.services.business_registration import analyze_business_registration
+from ocr_service.services.business_registration import (
+    analyze_business_registration,
+    has_missing_required_business_fields,
+    parse_business_registration_with_fallback,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,10 +44,11 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Validate parsed business registration fields with data.go.kr NTS API. "
             "'status' checks registration status by number. "
-            "'authenticity' checks number, opening date, representative name, and optional parsed fields."
+            "'authenticity' checks number, opening date, representative name, and company name."
         ),
     )
     parser.add_argument("--output", help="Write the raw OCR JSON response to this path.")
+    parser.add_argument("--parsed-output", help="Write the parsed business registration JSON to this path.")
     return parser.parse_args()
 
 
@@ -58,19 +64,25 @@ def main() -> int:
     if not file_path.is_file():
         print(f"Not a file: {file_path}", file=sys.stderr)
         return 2
-    validate_file_size(file_path)
+    validate_document_size(file_path.stat().st_size, file_path.name)
+    document = DocumentSource.from_path(file_path)
 
-    result = call_ocr(file_path, args.lang, args.table, args.template_id, args.timeout)
+    is_business_mode = args.business_registration or args.business_registration_validation
+    if is_business_mode:
+        result = call_business_license_ocr(document, args.timeout)
+    else:
+        result = call_ocr(document, args.lang, args.table, args.template_id, args.timeout)
 
     if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_file(Path(args.output), result)
 
     text = extract_text(result)
 
-    if args.business_registration or args.business_registration_validation:
-        parsed = analyze_business_registration(result, args.business_registration_validation)
+    if is_business_mode:
+        fallback_result = load_business_registration_fallback(document, args, result)
+        parsed = analyze_business_registration(result, args.business_registration_validation, fallback_result)
+        if args.parsed_output:
+            write_json_file(Path(args.parsed_output), parsed)
         print(json.dumps(build_business_registration_response(parsed), ensure_ascii=False, indent=2))
     elif args.template_fields:
         print(json.dumps(extract_template_fields(result), ensure_ascii=False, indent=2))
@@ -80,3 +92,22 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     return 0
+
+
+def write_json_file(output_path: Path, payload: dict) -> None:
+    # raw와 parsed 저장 모두 같은 인코딩/디렉터리 생성 규칙을 사용한다.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_business_registration_fallback(
+    document: DocumentSource,
+    args: argparse.Namespace,
+    result: dict,
+) -> dict | None:
+    parsed = parse_business_registration_with_fallback(result)
+    if not has_missing_required_business_fields(parsed):
+        return None
+
+    # Document OCR 필드가 부족할 때만 기존 General/Template OCR 파서를 보조로 사용한다.
+    return call_ocr(document, args.lang, args.table, args.template_id, args.timeout)

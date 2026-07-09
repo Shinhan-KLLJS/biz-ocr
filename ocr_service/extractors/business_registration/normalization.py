@@ -14,6 +14,8 @@ def normalize_label(label: str) -> str:
 def normalize_date(value: str) -> str | None:
     match = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", value)
     if not match:
+        match = re.search(r"(\d{4})\D*(\d{1,2})\D*(\d{1,2})\s*일?", value)
+    if not match:
         return None
 
     year, month, day = match.groups()

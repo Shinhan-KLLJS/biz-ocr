@@ -28,20 +28,42 @@ def decide_business_registration(parsed: dict) -> dict:
             "사업자 상태 또는 진위 검증 결과가 없어 최종 승인할 수 없습니다.",
         )
 
-    # 상태조회와 진위확인은 실패 의미가 달라 사유 코드를 분리한다.
-    if validation.get("isValid") is False:
-        reason_code = "INVALID_CERTIFICATE"
-        message = "사업자등록증 진위 확인에 실패했습니다."
-        if validation.get("mode") == "status":
-            reason_code = "UNREGISTERED_BUSINESS"
-            message = "등록된 사업자로 확인되지 않았습니다."
-        return make_decision("rejected", reason_code, message)
+    if validation.get("error"):
+        return make_decision(
+            "review_required",
+            "VALIDATION_INPUT_INCOMPLETE",
+            "사업자 검증에 필요한 OCR 필드가 부족하여 수동 검토가 필요합니다.",
+            missingFields=validation.get("missingFields", []),
+            validationError=validation.get("error"),
+        )
+
+    validation_mode = validation.get("mode")
+    if validation.get("isRegistered") is False:
+        return make_decision(
+            "rejected",
+            "UNREGISTERED_BUSINESS",
+            "등록된 사업자로 확인되지 않았습니다.",
+        )
+
+    if validation.get("isCertificateValid") is False:
+        return make_decision(
+            "rejected",
+            "INVALID_CERTIFICATE",
+            "사업자등록증 진위 확인에 실패했습니다.",
+        )
 
     if validation.get("isActive") is False:
         return make_decision(
             "rejected",
             "INACTIVE_BUSINESS",
             "현재 운영 중인 사업자로 확인되지 않았습니다.",
+        )
+
+    if validation_mode == "status":
+        return make_decision(
+            "review_required",
+            "AUTHENTICITY_VALIDATION_REQUIRED",
+            "사업자 상태는 확인되었지만 사업자등록증 진위 확인이 필요합니다.",
         )
 
     if not classification:

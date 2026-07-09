@@ -84,6 +84,92 @@ class BusinessRegistrationParsingTests(unittest.TestCase):
         self.assertEqual(parsed["fields"]["businessType"], "정보통신업")
         self.assertEqual(parsed["fields"]["businessItem"], "응용 소프트웨어")
 
+    def test_parse_spaced_representative_label(self):
+        text = """
+등록번호 : 132-81-48751
+법 인 명 (단 체 명) : 애드컴주식회사
+대 표 자 : 조용길
+개 업 연 월 일 : 2003 년 02 월 14 일
+사업장 소재지 : 경기도 남양주시 진건읍 진관산단로54번길 10
+사 업 의 종 류 : 업태 제조
+종목 광고물제작
+"""
+
+        parsed = parse_business_registration_text(text)
+
+        self.assertEqual(parsed["fields"]["companyName"], "애드컴주식회사")
+        self.assertEqual(parsed["fields"]["representativeName"], "조용길")
+        self.assertEqual(parsed["fields"]["openingDate"], "2003-02-14")
+
+    def test_parse_actual_ocr_order_for_adcom_certificate(self):
+        text = """
+등록번호
+:
+132-81-48751
+법인명
+(단체명)
+:
+애드컴주식회사
+대
+표
+자
+:
+조용길
+사
+업
+의
+종
+류
+:
+업태
+개
+업
+연
+월
+일
+:
+2003
+년
+02
+월
+14
+일
+사업장
+소재지
+:
+경기도
+남양주시
+종목
+제조
+제조
+전기,
+가스,
+증기
+및
+수도사업
+건설업
+부동산
+서비스
+서비스서업
+광고물제작
+광고대행
+디자인
+발
+급
+사
+유
+:
+정정
+"""
+
+        parsed = parse_business_registration_text(text)
+
+        self.assertEqual(parsed["fields"]["representativeName"], "조용길")
+        self.assertIn("제조", parsed["fields"]["businessType"])
+        self.assertIn("서비스서업", parsed["fields"]["businessType"])
+        self.assertIn("광고물제작", parsed["fields"]["businessItem"])
+        self.assertNotIn("missing required fields: businessType", parsed["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,19 @@ from ocr_service.extractors.business_registration.normalization import (
 )
 
 
+COMMON_BUSINESS_TYPE_VALUES = {
+    "제조",
+    "건설업",
+    "부동산",
+    "서비스",
+    "서비스업",
+    "서비스서업",
+    "도매",
+    "소매",
+    "도소매",
+}
+
+
 def collect_business_items(lines: list[str]) -> list[str]:
     try:
         start = next(index for index, line in enumerate(lines) if compact_label(line) in {"종목", "중목"})
@@ -110,6 +123,11 @@ def collect_leading_business_type_candidates(items: list[str]) -> list[str]:
 
 
 def is_business_type_candidate(value: str) -> bool:
+    compacted = compact_label(value)
+    if compacted in COMMON_BUSINESS_TYPE_VALUES:
+        return True
+    if compacted in {"전기,", "가스,", "증기", "및", "수도사업"}:
+        return True
     if not value.endswith("업"):
         return False
     if len(value) < 2:

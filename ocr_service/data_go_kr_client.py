@@ -1,18 +1,22 @@
 """data.go.kr 국세청 사업자등록 API 호출과 응답 정리를 담당한다."""
 
+import logging
 import os
 import re
-import sys
 from urllib.parse import quote
 
 import requests
 
 from ocr_service.config import get_required_env
+from ocr_service.errors import ExternalServiceError
+from ocr_service.redaction import redact_secrets
 
 
 NTS_BUSINESSMAN_BASE_URL = "https://api.odcloud.kr/api/nts-businessman/v1"
 STATUS_ENDPOINT = "status"
 AUTHENTICITY_ENDPOINT = "validate"
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_business_registration_number(value: str) -> str:
@@ -38,21 +42,30 @@ def build_data_go_kr_url(endpoint: str) -> str:
 
 
 def post_nts_businessman(endpoint: str, payload: dict, timeout: int | None = None) -> dict:
-    response = requests.post(
-        build_data_go_kr_url(endpoint),
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        json=payload,
-        timeout=timeout or int(os.getenv("DATA_GO_KR_TIMEOUT", "30")),
-    )
+    try:
+        response = requests.post(
+            build_data_go_kr_url(endpoint),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout or int(os.getenv("DATA_GO_KR_TIMEOUT", "30")),
+        )
+    except requests.RequestException as exc:
+        # requests 예외 메시지에는 serviceKey가 담긴 요청 URL이 그대로 들어간다.
+        # 연쇄(chaining) 없이 마스킹한 메시지만 올려 호출자와 로그에 키가 남지 않게 한다.
+        raise ExternalServiceError(f"NTS business validation request failed: {redact_secrets(exc)}") from None
 
     if not response.ok:
-        print(response.text, file=sys.stderr)
-        response.raise_for_status()
+        logger.error(
+            "NTS business validation responded %s: %s",
+            response.status_code,
+            redact_secrets(response.text),
+        )
+        raise ExternalServiceError(f"NTS business validation responded with HTTP {response.status_code}")
 
     result = response.json()
     status_code = result.get("status_code")
     if status_code and status_code != "OK":
-        raise RuntimeError(f"NTS business validation failed: {status_code}")
+        raise ExternalServiceError(f"NTS business validation failed: {status_code}")
     return result
 
 
@@ -60,12 +73,17 @@ def lookup_business_status(registration_number: str, timeout: int | None = None)
     business_number = normalize_business_registration_number(registration_number)
     result = post_nts_businessman(STATUS_ENDPOINT, {"b_no": [business_number]}, timeout=timeout)
     item = first_response_item(result)
-    registered = is_registered_status_item(item)
+    return summarize_business_status(business_number, item)
 
+
+def summarize_business_status(business_number: str, item: dict) -> dict:
+    registered = is_registered_status_item(item)
     return {
         "provider": "data.go.kr/nts-businessman",
         "mode": "status",
         "businessRegistrationNumber": format_business_registration_number(business_number),
+        "isCertificateValid": None,
+        "isRegistered": registered,
         "isValid": registered,
         "isActive": item.get("b_stt_cd") == "01",
         "businessStatus": item.get("b_stt"),
@@ -85,41 +103,44 @@ def lookup_business_status(registration_number: str, timeout: int | None = None)
 def verify_business_registration_authenticity(fields: dict, timeout: int | None = None) -> dict:
     business_number = normalize_business_registration_number(fields.get("businessRegistrationNumber", ""))
     opening_date = normalize_yyyymmdd(fields.get("openingDate", ""))
-    representative_name = require_field(fields, "representativeName")
+    representative_name = normalize_representative_name(require_field(fields, "representativeName"))
 
     business = {
         "b_no": business_number,
         "start_dt": opening_date,
         "p_nm": representative_name,
     }
+    # 진위확인은 Swagger 예시의 핵심 식별값만 보낸다. OCR 업태/종목/주소는 흔들림이 커서 일치 검증에 쓰지 않는다.
     add_optional_business_description(business, "b_nm", fields.get("companyName"))
-    # 국세청 진위확인 API의 업태/종목 입력명은 각각 b_sector/b_type이다.
-    add_optional_business_description(business, "b_sector", fields.get("businessType"))
-    add_optional_business_description(business, "b_type", fields.get("businessItem"))
-    add_optional_business_description(business, "b_adr", fields.get("businessAddress"))
 
     result = post_nts_businessman(AUTHENTICITY_ENDPOINT, {"businesses": [business]}, timeout=timeout)
     item = first_response_item(result)
     status = item.get("status") or {}
+    status_summary = summarize_business_status(business_number, status) if status else {}
+    if not status_summary:
+        status_summary = lookup_business_status(business_number, timeout=timeout)
+    certificate_valid = item.get("valid") == "01"
 
     return {
         "provider": "data.go.kr/nts-businessman",
         "mode": "authenticity",
         "businessRegistrationNumber": format_business_registration_number(business_number),
-        "isValid": item.get("valid") == "01",
+        "isCertificateValid": certificate_valid,
+        "isRegistered": status_summary.get("isRegistered"),
+        "isValid": certificate_valid,
         "validCode": item.get("valid"),
         "validMessage": item.get("valid_msg"),
-        "isActive": status.get("b_stt_cd") == "01",
-        "businessStatus": status.get("b_stt"),
-        "businessStatusCode": status.get("b_stt_cd"),
-        "taxType": status.get("tax_type"),
-        "taxTypeCode": status.get("tax_type_cd"),
-        "closedDate": status.get("end_dt") or None,
-        "unitTaxClosure": status.get("utcc_yn") or None,
-        "taxTypeChangeDate": status.get("tax_type_change_dt") or None,
-        "invoiceApplyDate": status.get("invoice_apply_dt") or None,
-        "previousTaxType": status.get("rbf_tax_type"),
-        "previousTaxTypeCode": status.get("rbf_tax_type_cd"),
+        "isActive": status_summary.get("isActive"),
+        "businessStatus": status_summary.get("businessStatus"),
+        "businessStatusCode": status_summary.get("businessStatusCode"),
+        "taxType": status_summary.get("taxType"),
+        "taxTypeCode": status_summary.get("taxTypeCode"),
+        "closedDate": status_summary.get("closedDate"),
+        "unitTaxClosure": status_summary.get("unitTaxClosure"),
+        "taxTypeChangeDate": status_summary.get("taxTypeChangeDate"),
+        "invoiceApplyDate": status_summary.get("invoiceApplyDate"),
+        "previousTaxType": status_summary.get("previousTaxType"),
+        "previousTaxTypeCode": status_summary.get("previousTaxTypeCode"),
         "raw": item,
     }
 
@@ -151,6 +172,16 @@ def require_field(fields: dict, key: str) -> str:
     if not value:
         raise ValueError(f"{key} is required for authenticity validation")
     return value
+
+
+def normalize_representative_name(value: str) -> str:
+    # 사업자등록증에는 "대표자 외 N명" 표기가 있지만 국세청 진위확인은 대표자명만 받는다.
+    normalized = re.sub(r"\s+", "", value or "")
+    normalized = re.sub(r"외\d+명$", "", normalized)
+    normalized = re.sub(r"외[0-9]+명$", "", normalized)
+    if not normalized:
+        raise ValueError("representativeName is required for authenticity validation")
+    return normalized
 
 
 def add_optional_business_description(business: dict, key: str, value: str | None) -> None:

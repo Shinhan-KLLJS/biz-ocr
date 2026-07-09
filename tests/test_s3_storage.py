@@ -1,17 +1,27 @@
-import tempfile
+import io
 import unittest
-from pathlib import Path
 
-from ocr_service.storage.s3 import download_s3_object, extract_s3_location, parse_s3_url
+from ocr_service.storage.s3 import (
+    extract_s3_location,
+    head_s3_object_size,
+    parse_s3_url,
+    read_s3_object,
+)
 
 
 class FakeS3Client:
-    def __init__(self):
-        self.calls = []
+    def __init__(self, content: bytes = b"downloaded"):
+        self.content = content
+        self.get_calls = []
+        self.head_calls = []
 
-    def download_file(self, bucket, key, destination):
-        self.calls.append((bucket, key, destination))
-        Path(destination).write_bytes(b"downloaded")
+    def get_object(self, Bucket, Key):  # noqa: N803 - boto3 인자 이름을 따른다.
+        self.get_calls.append((Bucket, Key))
+        return {"Body": io.BytesIO(self.content)}
+
+    def head_object(self, Bucket, Key):  # noqa: N803 - boto3 인자 이름을 따른다.
+        self.head_calls.append((Bucket, Key))
+        return {"ContentLength": len(self.content)}
 
 
 class S3StorageTests(unittest.TestCase):
@@ -45,19 +55,21 @@ class S3StorageTests(unittest.TestCase):
             ("ocr-bucket", "incoming/file.png"),
         )
 
-    def test_download_s3_object(self):
-        fake_client = FakeS3Client()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = download_s3_object(
-                "ocr-bucket",
-                "incoming/file.png",
-                download_dir=Path(temp_dir),
-                s3_client=fake_client,
-            )
+    def test_read_s3_object_returns_bytes_without_touching_disk(self):
+        fake_client = FakeS3Client(b"image-bytes")
 
-        self.assertEqual(fake_client.calls[0][0], "ocr-bucket")
-        self.assertEqual(fake_client.calls[0][1], "incoming/file.png")
-        self.assertEqual(path.name, "file.png")
+        content = read_s3_object("ocr-bucket", "incoming/file.png", s3_client=fake_client)
+
+        self.assertEqual(content, b"image-bytes")
+        self.assertEqual(fake_client.get_calls, [("ocr-bucket", "incoming/file.png")])
+
+    def test_head_s3_object_size_reports_content_length(self):
+        fake_client = FakeS3Client(b"12345")
+
+        size = head_s3_object_size("ocr-bucket", "incoming/file.png", s3_client=fake_client)
+
+        self.assertEqual(size, 5)
+        self.assertEqual(fake_client.head_calls, [("ocr-bucket", "incoming/file.png")])
 
 
 if __name__ == "__main__":

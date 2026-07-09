@@ -1,12 +1,13 @@
 """Lambda 핸들러의 이벤트 정규화와 검증 옵션 처리를 검증한다."""
 
 import json
+import os
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from ocr_service.lambda_handler import (
     handler,
+    load_s3_document,
     normalize_event,
     parse_business_validation_mode,
     parse_event_template_ids,
@@ -34,99 +35,57 @@ class LambdaHandlerTests(unittest.TestCase):
         )
         self.assertIsNone(parse_business_validation_mode({"businessRegistrationValidation": "off"}))
 
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    @patch("ocr_service.services.business_registration.parse_business_registration_result")
-    @patch("ocr_service.lambda_handler.call_ocr")
-    @patch("ocr_service.lambda_handler.validate_file_size")
-    @patch("ocr_service.lambda_handler.download_s3_object")
-    def test_handler_downloads_s3_and_returns_parsed_payload(
-        self,
-        mock_download,
-        mock_validate,
-        mock_call_ocr,
-        mock_parse,
-        mock_business_validation,
-    ):
-        mock_download.return_value = Path("/tmp/file.png")
-        mock_call_ocr.return_value = {"images": []}
-        mock_parse.return_value = {
-            "documentType": "businessRegistrationCertificate",
-            "fields": {
-                "businessRegistrationNumber": "368-88-03013",
-                "companyName": "신한 KLLJS",
-                "representativeName": "이정현",
-            },
-            "advertisingClassification": {},
-            "warnings": [],
-        }
-
+    @patch("ocr_service.lambda_handler.load_s3_document")
+    def test_handler_rejects_request_without_split_operation(self, mock_load_document):
         response = handler({"bucket": "ocr-bucket", "key": "incoming/file.png"}, None)
         body = json.loads(response["body"])
 
-        self.assertEqual(response["statusCode"], 200)
-        self.assertEqual(
-            body["business"],
-            {
-                "businessRegistrationNumber": "368-88-03013",
-                "companyName": "신한 KLLJS",
-                "representativeName": "이정현",
-            },
-        )
-        self.assertEqual(body["status"], "review_required")
-        mock_download.assert_called_once_with("ocr-bucket", "incoming/file.png")
-        mock_validate.assert_called_once_with(Path("/tmp/file.png"))
-        mock_call_ocr.assert_called_once()
-        mock_business_validation.assert_not_called()
+        self.assertEqual(response["statusCode"], 400)
+        self.assertEqual(body["error"], "UnsupportedOperation")
+        mock_load_document.assert_not_called()
 
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    @patch("ocr_service.services.business_registration.parse_business_registration_result")
-    @patch("ocr_service.lambda_handler.call_ocr")
-    @patch("ocr_service.lambda_handler.validate_file_size")
-    @patch("ocr_service.lambda_handler.download_s3_object")
-    def test_handler_adds_business_validation_when_requested(
-        self,
-        mock_download,
-        mock_validate,
-        mock_call_ocr,
-        mock_parse,
-        mock_business_validation,
-    ):
-        mock_download.return_value = Path("/tmp/file.png")
-        mock_call_ocr.return_value = {"images": []}
-        mock_parse.return_value = {
-            "documentType": "businessRegistrationCertificate",
-            "fields": {
-                "businessRegistrationNumber": "368-88-03013",
-                "companyName": "신한 KLLJS",
-                "representativeName": "이정현",
-                "openingDate": "2024-06-24",
-                "businessAddress": "서울특별시 송파구",
-                "businessType": "서비스업",
-                "businessItem": "광고대행",
-            },
-            "advertisingClassification": {"isAdvertisingRelated": True, "reviewRequired": False},
-            "warnings": [],
-        }
-        mock_business_validation.return_value = {"mode": "status", "isValid": True, "isActive": True}
+    @patch("ocr_service.lambda_handler.read_s3_object")
+    @patch("ocr_service.lambda_handler.head_s3_object_size")
+    def test_load_s3_document_rejects_large_object_before_reading_it(self, mock_head, mock_read):
+        mock_head.return_value = 400 * 1024 * 1024
 
-        response = handler(
-            {
-                "bucket": "ocr-bucket",
-                "key": "incoming/file.png",
-                "businessRegistrationValidation": "status",
-            },
-            None,
-        )
+        with patch.dict(os.environ, {"NCLOUD_OCR_MAX_FILE_BYTES": str(50 * 1024 * 1024)}, clear=False):
+            with self.assertRaises(ValueError):
+                load_s3_document("ocr-bucket", "incoming/huge.pdf")
+
+        mock_read.assert_not_called()
+
+    @patch("ocr_service.lambda_handler.read_s3_object")
+    @patch("ocr_service.lambda_handler.head_s3_object_size")
+    def test_load_s3_document_rejects_unsupported_format_before_any_s3_call(self, mock_head, mock_read):
+        with self.assertRaises(ValueError):
+            load_s3_document("ocr-bucket", "incoming/file.gif")
+
+        mock_head.assert_not_called()
+        mock_read.assert_not_called()
+
+    @patch("ocr_service.lambda_handler.read_s3_object")
+    @patch("ocr_service.lambda_handler.head_s3_object_size")
+    def test_load_s3_document_uses_posix_key_basename(self, mock_head, mock_read):
+        mock_head.return_value = 10
+        mock_read.return_value = b"image"
+
+        document = load_s3_document("ocr-bucket", "incoming/nested/business registration.png")
+
+        self.assertEqual(document.name, "business registration.png")
+        self.assertEqual(document.content, b"image")
+
+    @patch("ocr_service.lambda_handler.load_s3_document")
+    def test_handler_rejects_s3_event_trigger_with_a_clear_reason(self, mock_load_document):
+        # S3 이벤트에는 operation도 경로도 없어 OCR 결과를 돌려줄 호출자가 없다.
+        event = {"Records": [{"s3": {"bucket": {"name": "b"}, "object": {"key": "k.png"}}}]}
+
+        response = handler(event, None)
         body = json.loads(response["body"])
 
-        self.assertEqual(response["statusCode"], 200)
-        self.assertEqual(body["status"], "accepted")
-        self.assertTrue(body["eligibility"]["isEligible"])
-        self.assertTrue(body["eligibility"]["isActive"])
-        mock_business_validation.assert_called_once_with(
-            mock_parse.return_value["fields"],
-            "status",
-        )
+        self.assertEqual(response["statusCode"], 400)
+        self.assertIn("S3 event triggers are not supported", body["message"])
+        mock_load_document.assert_not_called()
 
 
 if __name__ == "__main__":

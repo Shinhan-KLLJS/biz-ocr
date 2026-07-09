@@ -25,12 +25,12 @@ def extract_split_text_business_fields(text: str) -> dict:
     patterns = {
         "businessRegistrationNumber": r"(?:사업자\s*)?등록번호\s*:\s*(\d{3}-\d{2}-\d{5})",
         "companyName": (
-            r"(?:상\s*호|법\s*인\s*명\s*\(\s*단체명\s*\))\s*:\s*(.*?)"
-            r"(?=\s*(?:대표\s*자|성\s*[명영]|개\s*업\s*연\s*월\s*일|법인등록번호|사업장))"
+            r"(?:상\s*호|법\s*인\s*명\s*\(\s*단\s*체\s*명\s*\))\s*:\s*(.*?)"
+            r"(?=\s*(?:대\s*표\s*자|성\s*[명영]|개\s*업\s*연\s*월\s*일|법\s*인\s*등록번호|사업장))"
         ),
         "representativeName": (
-            r"(?:대표\s*자|성\s*[명영])\s*:\s*(.*?)"
-            r"(?=\s*(?:개\s*업\s*연\s*월\s*일|법인등록번호|사업장|생년월일))"
+            r"(?:대\s*표\s*자|성\s*[명영])\s*:\s*(.*?)"
+            r"(?=\s*(?:사\s*업\s*의\s*종\s*류|개\s*업\s*연\s*월\s*일|법\s*인\s*등록번호|사업장|생년월일))"
         ),
         "openingDate": (
             r"개\s*업\s*연\s*월\s*일\s*:\s*"

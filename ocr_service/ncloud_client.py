@@ -1,37 +1,20 @@
+"""Ncloud CLOVA OCR 호출과 요청 메시지 구성을 담당한다."""
+
 import json
+import logging
 import os
-import sys
 import time
 import uuid
-from pathlib import Path
 
 import requests
 
 from ocr_service.config import get_required_env
+from ocr_service.documents import DocumentSource
+from ocr_service.errors import ExternalServiceError
+from ocr_service.redaction import redact_secrets
 
 
-SUPPORTED_FORMATS = {
-    ".jpg": "jpg",
-    ".jpeg": "jpg",
-    ".png": "png",
-    ".pdf": "pdf",
-    ".tif": "tiff",
-    ".tiff": "tiff",
-}
-
-
-def infer_format(file_path: Path) -> str:
-    try:
-        return SUPPORTED_FORMATS[file_path.suffix.lower()]
-    except KeyError as exc:
-        supported = ", ".join(sorted(SUPPORTED_FORMATS))
-        raise ValueError(f"Unsupported file format: {file_path.suffix}. Supported: {supported}") from exc
-
-
-def validate_file_size(file_path: Path) -> None:
-    max_bytes = int(os.getenv("NCLOUD_OCR_MAX_FILE_BYTES", str(50 * 1024 * 1024)))
-    if file_path.stat().st_size > max_bytes:
-        raise ValueError(f"File is too large for OCR request: {file_path} > {max_bytes} bytes")
+logger = logging.getLogger(__name__)
 
 
 def parse_template_ids(raw_value: str) -> list[int]:
@@ -47,10 +30,10 @@ def parse_template_ids(raw_value: str) -> list[int]:
     return template_ids
 
 
-def build_message(file_path: Path, language: str, enable_table_detection: bool) -> dict:
+def build_message(document: DocumentSource, language: str, enable_table_detection: bool) -> dict:
     image = {
-        "format": infer_format(file_path),
-        "name": file_path.stem or "document",
+        "format": document.format,
+        "name": document.stem,
     }
     template_ids = parse_template_ids(os.getenv("NCLOUD_OCR_TEMPLATE_IDS", ""))
     if template_ids:
@@ -70,14 +53,55 @@ def build_message(file_path: Path, language: str, enable_table_detection: bool) 
     return message
 
 
+def build_document_message(document: DocumentSource) -> dict:
+    # Document OCR은 문서 유형별 엔진이므로 General OCR 전용 옵션을 보내지 않는다.
+    return {
+        "version": os.getenv("NCLOUD_OCR_VERSION", "V2"),
+        "requestId": str(uuid.uuid4()),
+        "timestamp": int(round(time.time() * 1000)),
+        "images": [
+            {
+                "format": document.format,
+                "name": document.stem,
+            }
+        ],
+    }
+
+
 def add_template_ids(message: dict, template_ids: list[int]) -> None:
     if not template_ids:
         return
     message["images"][0]["templateIds"] = template_ids
 
 
+def post_multipart_ocr(
+    api_url: str,
+    secret_key: str,
+    message: dict,
+    document: DocumentSource,
+    timeout: int,
+) -> dict:
+    try:
+        response = requests.post(
+            api_url,
+            headers={"X-OCR-SECRET": secret_key},
+            data={"message": json.dumps(message, ensure_ascii=False)},
+            files={"file": (document.name, document.content)},
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        # 원본 예외에는 요청 URL이 들어 있어 연쇄(chaining) 없이 새 예외만 올린다.
+        raise ExternalServiceError(f"Ncloud OCR request failed: {redact_secrets(exc)}") from None
+
+    if not response.ok:
+        logger.error("Ncloud OCR responded %s: %s", response.status_code, redact_secrets(response.text))
+        raise ExternalServiceError(f"Ncloud OCR responded with HTTP {response.status_code}")
+
+    return response.json()
+
+
 def call_ocr(
-    file_path: Path,
+    document: DocumentSource,
     language: str,
     enable_table_detection: bool,
     template_ids: list[int],
@@ -85,20 +109,17 @@ def call_ocr(
 ) -> dict:
     api_url = get_required_env("NCLOUD_OCR_API_URL")
     secret_key = get_required_env("NCLOUD_OCR_SECRET_KEY")
-    message = build_message(file_path, language, enable_table_detection)
+    message = build_message(document, language, enable_table_detection)
     add_template_ids(message, template_ids)
 
-    with file_path.open("rb") as image_file:
-        response = requests.post(
-            api_url,
-            headers={"X-OCR-SECRET": secret_key},
-            data={"message": json.dumps(message, ensure_ascii=False)},
-            files={"file": (file_path.name, image_file)},
-            timeout=timeout,
-        )
+    return post_multipart_ocr(api_url, secret_key, message, document, timeout)
 
-    if not response.ok:
-        print(response.text, file=sys.stderr)
-        response.raise_for_status()
 
-    return response.json()
+def call_business_license_ocr(document: DocumentSource, timeout: int) -> dict:
+    api_url = (
+        os.getenv("NCLOUD_OCR_BIZ_LICENSE_API_URL")
+        or os.getenv("NCLOUD_BIZ_OCR_API_URL")
+        or get_required_env("NCLOUD_OCR_API_URL")
+    )
+    secret_key = os.getenv("NCLOUD_BIZ_OCR_SECRET_KEY") or get_required_env("NCLOUD_OCR_SECRET_KEY")
+    return post_multipart_ocr(api_url, secret_key, build_document_message(document), document, timeout)

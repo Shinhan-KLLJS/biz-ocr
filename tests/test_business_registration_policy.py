@@ -28,7 +28,7 @@ def make_parsed(validation=None, classification=None):
 class BusinessRegistrationPolicyTests(unittest.TestCase):
     def test_accepts_only_active_valid_advertising_business(self):
         decision = decide_business_registration(
-            make_parsed({"mode": "authenticity", "isValid": True, "isActive": True})
+            make_parsed({"mode": "authenticity", "isCertificateValid": True, "isActive": True})
         )
 
         self.assertEqual(decision["status"], "accepted")
@@ -36,7 +36,7 @@ class BusinessRegistrationPolicyTests(unittest.TestCase):
 
     def test_rejects_invalid_certificate(self):
         decision = decide_business_registration(
-            make_parsed({"mode": "authenticity", "isValid": False, "isActive": True})
+            make_parsed({"mode": "authenticity", "isCertificateValid": False, "isActive": True})
         )
 
         self.assertEqual(decision["status"], "rejected")
@@ -44,7 +44,7 @@ class BusinessRegistrationPolicyTests(unittest.TestCase):
 
     def test_rejects_inactive_business(self):
         decision = decide_business_registration(
-            make_parsed({"mode": "status", "isValid": True, "isActive": False})
+            make_parsed({"mode": "status", "isRegistered": True, "isActive": False})
         )
 
         self.assertEqual(decision["status"], "rejected")
@@ -53,7 +53,7 @@ class BusinessRegistrationPolicyTests(unittest.TestCase):
     def test_rejects_non_advertising_business(self):
         decision = decide_business_registration(
             make_parsed(
-                {"mode": "status", "isValid": True, "isActive": True},
+                {"mode": "authenticity", "isCertificateValid": True, "isActive": True},
                 {"isAdvertisingRelated": False, "reviewRequired": False},
             )
         )
@@ -73,13 +73,21 @@ class BusinessRegistrationPolicyTests(unittest.TestCase):
     def test_requires_review_for_broad_advertising_match(self):
         decision = decide_business_registration(
             make_parsed(
-                {"mode": "status", "isValid": True, "isActive": True},
+                {"mode": "authenticity", "isCertificateValid": True, "isActive": True},
                 {"isAdvertisingRelated": True, "reviewRequired": True},
             )
         )
 
         self.assertEqual(decision["status"], "review_required")
         self.assertEqual(decision["reasonCode"], "ADVERTISING_CLASSIFICATION_REVIEW_REQUIRED")
+
+    def test_requires_authenticity_validation_after_status_check(self):
+        decision = decide_business_registration(
+            make_parsed({"mode": "status", "isRegistered": True, "isActive": True})
+        )
+
+        self.assertEqual(decision["status"], "review_required")
+        self.assertEqual(decision["reasonCode"], "AUTHENTICITY_VALIDATION_REQUIRED")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from ocr_service.data_go_kr_client import (
     lookup_business_status,
     normalize_business_registration_number,
+    normalize_representative_name,
     normalize_yyyymmdd,
     validate_business_registration_fields,
     verify_business_registration_authenticity,
@@ -32,6 +33,11 @@ class DataGoKrClientTests(unittest.TestCase):
 
     def test_normalizes_opening_date(self):
         self.assertEqual(normalize_yyyymmdd("2024-06-24"), "20240624")
+
+    def test_normalizes_representative_name_for_authenticity(self):
+        self.assertEqual(normalize_representative_name("유미혜외 1명"), "유미혜")
+        self.assertEqual(normalize_representative_name("유미혜 외 1명"), "유미혜")
+        self.assertEqual(normalize_representative_name("조용길"), "조용길")
 
     @patch.dict(os.environ, {"DATA_GO_KR_SERVICE_KEY": "service-key"}, clear=False)
     @patch("ocr_service.data_go_kr_client.requests.post")
@@ -104,11 +110,17 @@ class DataGoKrClientTests(unittest.TestCase):
         self.assertEqual(request_business["start_dt"], "20240624")
         self.assertEqual(request_business["p_nm"], "이상옥")
         self.assertEqual(request_business["b_nm"], "(주)글로벌데이터로드")
-        self.assertEqual(request_business["b_sector"], "정보통신업")
-        self.assertEqual(request_business["b_type"], "응용 소프트웨어 개발 및 공급업")
+        self.assertNotIn("b_sector", request_business)
+        self.assertNotIn("b_type", request_business)
+        self.assertNotIn("b_adr", request_business)
         self.assertEqual(
-            request_business["b_adr"],
-            "서울특별시 송파구 오금로46길 41,2층 2404호(가락동)",
+            request_business,
+            {
+                "b_no": "3688803013",
+                "start_dt": "20240624",
+                "p_nm": "이상옥",
+                "b_nm": "(주)글로벌데이터로드",
+            },
         )
         self.assertTrue(validation["isValid"])
         self.assertTrue(validation["isActive"])

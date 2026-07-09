@@ -1,6 +1,10 @@
-import os
-from pathlib import Path
+"""요청/이벤트에서 S3 객체 위치를 찾아내고, 객체를 메모리로 읽는다."""
+
 from urllib.parse import unquote_plus, urlparse
+
+
+# Lambda warm start에서 재사용해 클라이언트 초기화 비용을 아낀다.
+_s3_client = None
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -66,18 +70,21 @@ def extract_s3_location(event: dict) -> tuple[str, str]:
 
 
 def get_s3_client():
-    import boto3
+    global _s3_client
+    if _s3_client is None:
+        import boto3
 
-    return boto3.client("s3")
+        _s3_client = boto3.client("s3")
+    return _s3_client
 
 
-def download_s3_object(bucket: str, key: str, download_dir: Path | None = None, s3_client=None) -> Path:
-    if download_dir is None:
-        download_dir = Path(os.getenv("OCR_DOWNLOAD_DIR", "/tmp"))
-
-    download_dir.mkdir(parents=True, exist_ok=True)
-    file_name = Path(key).name or "document"
-    destination = download_dir / file_name
+def head_s3_object_size(bucket: str, key: str, s3_client=None) -> int:
+    """객체를 읽기 전에 크기만 조회한다. s3:GetObject 권한으로 호출할 수 있다."""
     client = s3_client or get_s3_client()
-    client.download_file(bucket, key, str(destination))
-    return destination
+    return int(client.head_object(Bucket=bucket, Key=key)["ContentLength"])
+
+
+def read_s3_object(bucket: str, key: str, s3_client=None) -> bytes:
+    """객체 본문을 디스크를 거치지 않고 메모리로 읽는다."""
+    client = s3_client or get_s3_client()
+    return client.get_object(Bucket=bucket, Key=key)["Body"].read()
