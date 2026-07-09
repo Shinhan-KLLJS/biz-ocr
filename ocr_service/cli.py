@@ -1,3 +1,5 @@
+"""로컬 파일을 OCR 처리하고 필요한 출력 형식으로 보여주는 CLI이다."""
+
 import argparse
 import json
 import os
@@ -5,9 +7,10 @@ import sys
 from pathlib import Path
 
 from ocr_service.config import configure_stdio, load_dotenv
-from ocr_service.extractors.business_registration import parse_business_registration_result
 from ocr_service.extractors.template import extract_template_fields, extract_text
 from ocr_service.ncloud_client import call_ocr, validate_file_size
+from ocr_service.responses.business_registration import build_business_registration_response
+from ocr_service.services.business_registration import analyze_business_registration
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +32,15 @@ def parse_args() -> argparse.Namespace:
         "--business-registration",
         action="store_true",
         help="Parse the OCR result as a Korean business registration certificate.",
+    )
+    parser.add_argument(
+        "--business-registration-validation",
+        choices=("status", "authenticity"),
+        help=(
+            "Validate parsed business registration fields with data.go.kr NTS API. "
+            "'status' checks registration status by number. "
+            "'authenticity' checks number, opening date, representative name, and optional parsed fields."
+        ),
     )
     parser.add_argument("--output", help="Write the raw OCR JSON response to this path.")
     return parser.parse_args()
@@ -57,8 +69,9 @@ def main() -> int:
 
     text = extract_text(result)
 
-    if args.business_registration:
-        print(json.dumps(parse_business_registration_result(result), ensure_ascii=False, indent=2))
+    if args.business_registration or args.business_registration_validation:
+        parsed = analyze_business_registration(result, args.business_registration_validation)
+        print(json.dumps(build_business_registration_response(parsed), ensure_ascii=False, indent=2))
     elif args.template_fields:
         print(json.dumps(extract_template_fields(result), ensure_ascii=False, indent=2))
     elif args.text_only:
