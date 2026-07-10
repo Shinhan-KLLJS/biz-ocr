@@ -1,175 +1,80 @@
-"""사업자등록증 분석 서비스의 검증 전처리를 검증한다."""
+"""Document OCR 결과가 부족할 때의 보조 OCR 병합 동작을 검증한다."""
 
 import unittest
 from unittest.mock import patch
 
 from ocr_service.services.business_registration import (
-    analyze_business_registration,
-    verify_business_registration_submission,
+    has_missing_required_business_fields,
+    parse_business_registration_with_fallback,
 )
 
 
-class BusinessRegistrationServiceTests(unittest.TestCase):
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
+COMPLETE_FIELDS = {
+    "businessRegistrationNumber": "368-88-03013",
+    "companyName": "애드컴주식회사",
+    "representativeName": "조용길",
+    "openingDate": "2003-02-14",
+    "businessType": "제조",
+    "businessItem": "광고물제작",
+}
+
+
+class MissingFieldTests(unittest.TestCase):
+    def test_complete_fields_are_not_missing(self):
+        self.assertFalse(has_missing_required_business_fields({"fields": COMPLETE_FIELDS}))
+
+    def test_absent_representative_name_is_missing(self):
+        fields = {**COMPLETE_FIELDS}
+        del fields["representativeName"]
+
+        self.assertTrue(has_missing_required_business_fields({"fields": fields}))
+
+    def test_business_address_is_no_longer_required(self):
+        # 주소는 저장하지도 검증하지도 않으므로 보조 OCR을 다시 부를 이유가 없다.
+        self.assertFalse(has_missing_required_business_fields({"fields": COMPLETE_FIELDS}))
+
+
+class FallbackMergeTests(unittest.TestCase):
     @patch("ocr_service.services.business_registration.parse_business_registration_result")
-    def test_skips_authenticity_validation_when_representative_name_is_missing(
-        self,
-        mock_parse,
-        mock_validate,
-    ):
-        mock_parse.return_value = {
-            "fields": {
-                "businessRegistrationNumber": "132-81-48751",
-                "companyName": "애드컴주식회사",
-                "openingDate": "2003-02-14",
-                "businessAddress": "경기도 남양주시",
-                "businessType": "제조",
-                "businessItem": "광고물제작",
-            },
-            "advertisingClassification": {"isAdvertisingRelated": True, "reviewRequired": False},
-        }
+    def test_fallback_is_ignored_when_document_ocr_is_complete(self, mock_parse):
+        mock_parse.return_value = {"fields": COMPLETE_FIELDS, "warnings": []}
 
-        parsed = analyze_business_registration({"images": []}, "authenticity")
+        parsed = parse_business_registration_with_fallback({"images": []}, {"images": ["fallback"]})
 
-        self.assertEqual(parsed["decision"]["status"], "review_required")
-        self.assertEqual(parsed["decision"]["reasonCode"], "MISSING_REQUIRED_FIELDS")
-        self.assertEqual(parsed["decision"]["missingFields"], ["representativeName"])
-        self.assertEqual(parsed["validation"]["missingFields"], ["representativeName"])
-        mock_validate.assert_not_called()
+        self.assertEqual(parsed["fields"], COMPLETE_FIELDS)
+        # 보조 결과를 파싱하지 않고 곧장 반환한다.
+        mock_parse.assert_called_once()
 
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
     @patch("ocr_service.services.business_registration.parse_business_registration_result")
-    def test_returns_review_required_when_validation_input_is_malformed(
-        self,
-        mock_parse,
-        mock_validate,
-    ):
-        mock_parse.return_value = {
-            "fields": {
-                "businessRegistrationNumber": "bad-number",
-                "companyName": "애드컴주식회사",
-                "representativeName": "조용길",
-                "openingDate": "2003-02-14",
-                "businessAddress": "경기도 남양주시",
-                "businessType": "제조",
-                "businessItem": "광고물제작",
-            },
-            "advertisingClassification": {"isAdvertisingRelated": True, "reviewRequired": False},
-        }
-        mock_validate.side_effect = ValueError("businessRegistrationNumber must contain 10 digits")
+    def test_fallback_fills_only_the_missing_fields(self, mock_parse):
+        primary_fields = {**COMPLETE_FIELDS}
+        del primary_fields["representativeName"]
+        mock_parse.side_effect = [
+            {"fields": primary_fields, "warnings": ["missing required fields: representativeName"]},
+            {"fields": {**COMPLETE_FIELDS, "companyName": "잘못 읽은 상호"}, "warnings": ["fallback warning"]},
+        ]
 
-        parsed = analyze_business_registration({"images": []}, "authenticity")
+        parsed = parse_business_registration_with_fallback({"images": []}, {"images": ["fallback"]})
 
-        self.assertEqual(parsed["decision"]["status"], "review_required")
-        self.assertEqual(parsed["decision"]["reasonCode"], "VALIDATION_INPUT_INCOMPLETE")
-        self.assertIn("10 digits", parsed["decision"]["validationError"])
+        self.assertEqual(parsed["fields"]["representativeName"], "조용길")
+        # Document OCR이 읽은 값은 보조 결과가 덮어쓰지 않는다.
+        self.assertEqual(parsed["fields"]["companyName"], "애드컴주식회사")
+        self.assertNotIn("missing required fields: representativeName", parsed["warnings"])
+        self.assertIn("fallback warning", parsed["warnings"])
 
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_verifies_user_corrected_fields(self, mock_validate):
-        mock_validate.return_value = {
-            "mode": "authenticity",
-            "isCertificateValid": True,
-            "isRegistered": True,
-            "isActive": True,
-        }
+    @patch("ocr_service.services.business_registration.parse_business_registration_result")
+    def test_still_reports_fields_that_neither_ocr_could_read(self, mock_parse):
+        sparse_fields = {"businessRegistrationNumber": "368-88-03013"}
+        mock_parse.side_effect = [
+            {"fields": sparse_fields, "warnings": []},
+            {"fields": sparse_fields, "warnings": []},
+        ]
 
-        parsed = verify_business_registration_submission(
-            {
-                "businessRegistrationNumber": "3688803013",
-                "representativeName": "이상옥",
-                "openingDate": "20240624",
-                "businessType": "서비스업",
-                "businessItem": "광고대행",
-            }
-        )
+        parsed = parse_business_registration_with_fallback({"images": []}, {"images": ["fallback"]})
 
-        self.assertEqual(parsed["decision"]["status"], "accepted")
-        self.assertEqual(parsed["validation"]["mode"], "authenticity")
-        self.assertTrue(parsed["advertisingClassification"]["isAdvertisingRelated"])
-        mock_validate.assert_called_once()
-
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_rejects_separator_in_verification_submission(self, mock_validate):
-        parsed = verify_business_registration_submission(
-            {
-                "businessRegistrationNumber": "368-88-03013",
-                "representativeName": "이상옥",
-                "openingDate": "2024-06-24",
-            }
-        )
-
-        self.assertEqual(parsed["decision"]["status"], "review_required")
-        self.assertEqual(parsed["decision"]["reasonCode"], "VALIDATION_INPUT_INCOMPLETE")
-        self.assertIn("without separators", parsed["decision"]["validationError"])
-        mock_validate.assert_not_called()
-
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_status_mode_does_not_require_opening_date(self, mock_validate):
-        # 폐업 재확인은 사업자등록번호만 보내므로 개업일자를 요구하면 안 된다.
-        mock_validate.return_value = {
-            "mode": "status",
-            "isCertificateValid": None,
-            "isRegistered": True,
-            "isActive": True,
-        }
-
-        parsed = verify_business_registration_submission(
-            {"businessRegistrationNumber": "3688803013"},
-            "status",
-        )
-
-        self.assertNotIn("error", parsed["validation"])
-        self.assertTrue(parsed["validation"]["isActive"])
-        mock_validate.assert_called_once_with({"businessRegistrationNumber": "3688803013"}, "status")
-
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_status_mode_still_rejects_a_malformed_business_number(self, mock_validate):
-        parsed = verify_business_registration_submission(
-            {"businessRegistrationNumber": "368-88-03013"},
-            "status",
-        )
-
-        self.assertIn("10 digits", parsed["validation"]["error"])
-        self.assertEqual(parsed["decision"]["reasonCode"], "VALIDATION_INPUT_INCOMPLETE")
-        mock_validate.assert_not_called()
-
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_status_mode_reports_a_closed_business_as_rejected(self, mock_validate):
-        mock_validate.return_value = {
-            "mode": "status",
-            "isCertificateValid": None,
-            "isRegistered": True,
-            "isActive": False,
-        }
-
-        parsed = verify_business_registration_submission(
-            {"businessRegistrationNumber": "3688803013"},
-            "status",
-        )
-
-        self.assertEqual(parsed["decision"]["status"], "rejected")
-        self.assertEqual(parsed["decision"]["reasonCode"], "INACTIVE_BUSINESS")
-
-    @patch("ocr_service.services.business_registration.validate_business_registration_fields")
-    def test_requires_advertising_fields_for_final_decision(self, mock_validate):
-        mock_validate.return_value = {
-            "mode": "authenticity",
-            "isCertificateValid": True,
-            "isRegistered": True,
-            "isActive": True,
-        }
-
-        parsed = verify_business_registration_submission(
-            {
-                "businessRegistrationNumber": "3688803013",
-                "representativeName": "이상옥",
-                "openingDate": "20240624",
-            }
-        )
-
-        self.assertEqual(parsed["decision"]["status"], "review_required")
-        self.assertEqual(parsed["decision"]["reasonCode"], "ADVERTISING_CLASSIFICATION_INPUT_INCOMPLETE")
-        self.assertEqual(parsed["decision"]["missingFields"], ["businessType", "businessItem"])
+        warning = next(w for w in parsed["warnings"] if w.startswith("missing required fields:"))
+        self.assertIn("representativeName", warning)
+        self.assertIn("businessItem", warning)
 
 
 if __name__ == "__main__":

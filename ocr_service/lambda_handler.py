@@ -1,4 +1,8 @@
-"""S3에 올라온 사업자등록증을 OCR 처리하거나, 확정된 값을 검증해 응답한다."""
+"""S3에 올라온 사업자등록증을 OCR 처리해 파싱된 필드를 돌려준다.
+
+진위 확인과 최종 승인 판정은 이 Lambda가 하지 않는다.
+서버가 수행하며 규칙은 docs/server-verification-spec.md에 있다.
+"""
 
 import os
 
@@ -9,30 +13,30 @@ from ocr_service.documents import (
     object_key_to_file_name,
     validate_document_size,
 )
+from ocr_service.errors import ExternalServiceError
 from ocr_service.events import (
-    extract_business_fields,
     make_response,
     normalize_event,
-    parse_business_validation_mode,
     parse_event_template_ids,
     resolve_operation,
 )
 from ocr_service.ncloud_client import call_business_license_ocr, call_ocr
 from ocr_service.redaction import redact_secrets
-from ocr_service.responses.business_registration import (
-    build_business_registration_ocr_response,
-    build_business_registration_verification_response,
-)
+from ocr_service.responses.business_registration import build_business_registration_ocr_response
 from ocr_service.services.business_registration import (
     has_missing_required_business_fields,
     parse_business_registration_with_fallback,
-    verify_business_registration_submission,
 )
-from ocr_service.storage.s3 import extract_s3_location, head_s3_object_size, read_s3_object
+from ocr_service.storage.s3 import (
+    assert_allowed_bucket,
+    extract_s3_location,
+    head_s3_object_size,
+    read_s3_object,
+)
 
 
 UNSUPPORTED_OPERATION_MESSAGE = (
-    "operation must be 'ocr' or 'verification'. "
+    "operation must be 'ocr'. "
     "S3 event triggers are not supported because the OCR result has no caller to return to."
 )
 
@@ -42,15 +46,19 @@ def handler(event, context):
     event = normalize_event(event)
 
     try:
-        operation = resolve_operation(event)
-        if operation == "verification":
-            return handle_business_registration_verification(event)
-        if operation == "ocr":
+        if resolve_operation(event) == "ocr":
             return handle_business_registration_ocr(event)
         # S3 업로드 이벤트에는 operation도 경로도 없어 여기로 온다.
         return make_response(400, {"error": "UnsupportedOperation", "message": UNSUPPORTED_OPERATION_MESSAGE})
+    except ValueError as exc:
+        # 입력 위치 누락, 미지원 확장자, 파일 크기 초과처럼 호출자가 고칠 수 있는 오류다.
+        return make_response(400, {"error": type(exc).__name__, "message": redact_secrets(exc)})
+    except ExternalServiceError as exc:
+        # Ncloud OCR 장애는 이 서비스의 결함이 아니므로 502로 구분한다.
+        # ExternalServiceError는 RuntimeError 하위 클래스라 Exception보다 먼저 잡아야 한다.
+        return make_response(502, {"error": type(exc).__name__, "message": redact_secrets(exc)})
     except Exception as exc:
-        # 외부 API 예외 메시지에는 서비스 키가 실린 요청 URL이 들어올 수 있다.
+        # 외부 API 예외 메시지에는 시크릿 키가 실린 요청 URL이 들어올 수 있다.
         return make_response(500, {"error": type(exc).__name__, "message": redact_secrets(exc)})
 
 
@@ -60,13 +68,6 @@ lambda_handler = handler
 def handle_business_registration_ocr(event: dict) -> dict:
     parsed = run_business_registration_ocr(event)
     return make_response(200, build_business_registration_ocr_response(parsed))
-
-
-def handle_business_registration_verification(event: dict) -> dict:
-    fields = extract_business_fields(event)
-    validation_mode = parse_business_validation_mode(event) or "authenticity"
-    parsed = verify_business_registration_submission(fields, validation_mode)
-    return make_response(200, build_business_registration_verification_response(parsed))
 
 
 def load_s3_document(bucket: str, key: str) -> DocumentSource:
@@ -80,6 +81,7 @@ def load_s3_document(bucket: str, key: str) -> DocumentSource:
 
 def run_business_registration_ocr(event: dict) -> dict:
     bucket, key = extract_s3_location(event or {})
+    assert_allowed_bucket(bucket)
     document = load_s3_document(bucket, key)
 
     language = event.get("lang") or os.getenv("NCLOUD_OCR_LANG", "ko")

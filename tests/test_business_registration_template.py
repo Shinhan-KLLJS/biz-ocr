@@ -36,12 +36,12 @@ class BusinessRegistrationTemplateTests(unittest.TestCase):
                 "companyName": "(주)글로벌데이터로드",
                 "representativeName": "이상옥",
                 "openingDate": "2024-06-24",
-                "businessAddress": "서울특별시 송파구 오금로46길 41,2층 2404호(가락동)",
                 "businessType": "정보통신업",
                 "businessItem": "응용 소프트웨어 개발 및 공급업",
             },
         )
-        self.assertFalse(parsed["advertisingClassification"]["isAdvertisingRelated"])
+        # 템플릿이 사업장주소를 채워줘도 응답 필드에는 싣지 않는다.
+        self.assertNotIn("businessAddress", parsed["fields"])
         self.assertEqual(parsed["warnings"], [])
 
 

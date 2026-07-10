@@ -7,7 +7,6 @@ from ocr_service.extractors.business_registration.business_items import (
     collect_business_items,
     collect_business_type_candidates_from_lines,
 )
-from ocr_service.extractors.business_registration.classification import classify_advertising_business
 from ocr_service.extractors.business_registration.constants import REQUIRED_BUSINESS_FIELDS
 from ocr_service.extractors.business_registration.document_fields import extract_document_business_fields
 from ocr_service.extractors.business_registration.normalization import compact_label, normalize_date
@@ -49,7 +48,6 @@ def parse_business_registration_text(text: str) -> dict:
     return {
         "documentType": "businessRegistrationCertificate",
         "fields": required_fields,
-        "advertisingClassification": classify_advertising_business(required_fields),
         "rawText": text,
         "warnings": warnings,
     }
@@ -78,7 +76,6 @@ def parse_business_registration_result(result: dict) -> dict:
         "documentType": "businessRegistrationCertificate",
         "fields": fields,
         "fieldLabels": REQUIRED_BUSINESS_FIELDS,
-        "advertisingClassification": classify_advertising_business(fields),
         "rawText": text,
         "warnings": warnings,
     }

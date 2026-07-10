@@ -1,4 +1,4 @@
-"""Lambda 핸들러의 이벤트 정규화와 검증 옵션 처리를 검증한다."""
+"""Lambda 핸들러의 이벤트 정규화와 S3 문서 로딩을 검증한다."""
 
 import json
 import os
@@ -9,7 +9,6 @@ from ocr_service.lambda_handler import (
     handler,
     load_s3_document,
     normalize_event,
-    parse_business_validation_mode,
     parse_event_template_ids,
 )
 
@@ -26,14 +25,6 @@ class LambdaHandlerTests(unittest.TestCase):
     def test_parse_event_template_ids(self):
         self.assertEqual(parse_event_template_ids({"templateIds": "1, 2"}), [1, 2])
         self.assertEqual(parse_event_template_ids({"template_ids": [3, "4"]}), [3, 4])
-
-    def test_parse_business_validation_mode(self):
-        self.assertEqual(parse_business_validation_mode({"businessRegistrationValidation": True}), "status")
-        self.assertEqual(
-            parse_business_validation_mode({"business_registration_validation": "authenticity"}),
-            "authenticity",
-        )
-        self.assertIsNone(parse_business_validation_mode({"businessRegistrationValidation": "off"}))
 
     @patch("ocr_service.lambda_handler.load_s3_document")
     def test_handler_rejects_request_without_split_operation(self, mock_load_document):

@@ -3,6 +3,7 @@
 import unittest
 
 from ocr_service.extractors.business_registration import parse_business_registration_result
+from ocr_service.extractors.business_registration.document_fields import extract_document_business_fields
 
 
 class BusinessRegistrationDocumentTests(unittest.TestCase):
@@ -29,25 +30,26 @@ class BusinessRegistrationDocumentTests(unittest.TestCase):
                 "companyName": "(주)글로벌데이터로드",
                 "representativeName": "이상옥",
                 "openingDate": "2024-06-24",
-                "businessAddress": "서울특별시 송파구 오금로46길 41",
                 "businessType": "서비스업",
                 "businessItem": "광고대행",
             },
         )
         self.assertNotIn("socialNumber", parsed["fields"])
-        self.assertTrue(parsed["advertisingClassification"]["isAdvertisingRelated"])
+        # 주소는 저장/검증에 쓰지 않으므로 OCR이 읽어도 응답 필드에 싣지 않는다.
+        self.assertNotIn("businessAddress", parsed["fields"])
 
     def test_parse_document_response_uses_corp_name_when_company_name_is_missing(self):
         parsed = parse_business_registration_result(make_document_response({"corpName": [{"text": "주식회사 광고"}]}))
 
         self.assertEqual(parsed["fields"]["companyName"], "주식회사 광고")
 
-    def test_parse_document_response_uses_head_address_when_business_address_is_missing(self):
-        parsed = parse_business_registration_result(
+    def test_document_mapping_uses_head_address_when_business_address_is_missing(self):
+        # 주소는 응답에서 걸러지지만, 주소 컬럼이 생기면 되살릴 수 있도록 매핑 자체는 유지한다.
+        fields = extract_document_business_fields(
             make_document_response({"headAddress": [{"text": "서울특별시 강남구"}]})
         )
 
-        self.assertEqual(parsed["fields"]["businessAddress"], "서울특별시 강남구")
+        self.assertEqual(fields["businessAddress"], "서울특별시 강남구")
 
 
 def make_document_response(document_result: dict) -> dict:

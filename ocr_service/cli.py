@@ -10,9 +10,8 @@ from ocr_service.config import configure_stdio, load_dotenv
 from ocr_service.documents import DocumentSource, validate_document_size
 from ocr_service.extractors.template import extract_template_fields, extract_text
 from ocr_service.ncloud_client import call_business_license_ocr, call_ocr
-from ocr_service.responses.business_registration import build_business_registration_response
+from ocr_service.responses.business_registration import build_business_registration_ocr_response
 from ocr_service.services.business_registration import (
-    analyze_business_registration,
     has_missing_required_business_fields,
     parse_business_registration_with_fallback,
 )
@@ -38,15 +37,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Parse the OCR result as a Korean business registration certificate.",
     )
-    parser.add_argument(
-        "--business-registration-validation",
-        choices=("status", "authenticity"),
-        help=(
-            "Validate parsed business registration fields with data.go.kr NTS API. "
-            "'status' checks registration status by number. "
-            "'authenticity' checks number, opening date, representative name, and company name."
-        ),
-    )
     parser.add_argument("--output", help="Write the raw OCR JSON response to this path.")
     parser.add_argument("--parsed-output", help="Write the parsed business registration JSON to this path.")
     return parser.parse_args()
@@ -67,8 +57,7 @@ def main() -> int:
     validate_document_size(file_path.stat().st_size, file_path.name)
     document = DocumentSource.from_path(file_path)
 
-    is_business_mode = args.business_registration or args.business_registration_validation
-    if is_business_mode:
+    if args.business_registration:
         result = call_business_license_ocr(document, args.timeout)
     else:
         result = call_ocr(document, args.lang, args.table, args.template_id, args.timeout)
@@ -78,12 +67,12 @@ def main() -> int:
 
     text = extract_text(result)
 
-    if is_business_mode:
+    if args.business_registration:
         fallback_result = load_business_registration_fallback(document, args, result)
-        parsed = analyze_business_registration(result, args.business_registration_validation, fallback_result)
+        parsed = parse_business_registration_with_fallback(result, fallback_result)
         if args.parsed_output:
             write_json_file(Path(args.parsed_output), parsed)
-        print(json.dumps(build_business_registration_response(parsed), ensure_ascii=False, indent=2))
+        print(json.dumps(build_business_registration_ocr_response(parsed), ensure_ascii=False, indent=2))
     elif args.template_fields:
         print(json.dumps(extract_template_fields(result), ensure_ascii=False, indent=2))
     elif args.text_only:

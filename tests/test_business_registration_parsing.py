@@ -14,10 +14,8 @@ class BusinessRegistrationParsingTests(unittest.TestCase):
         self.assertEqual(parsed["fields"]["companyName"], "(주)글로벌데이터로드")
         self.assertEqual(parsed["fields"]["representativeName"], "이상옥")
         self.assertEqual(parsed["fields"]["openingDate"], "2024-06-24")
-        self.assertEqual(
-            parsed["fields"]["businessAddress"],
-            "서울특별시 송파구 오금로46길 41,2층 2404호(가락동)",
-        )
+        # 주소는 원문에서 읽히지만 응답 필드로는 나가지 않는다.
+        self.assertNotIn("businessAddress", parsed["fields"])
         self.assertEqual(parsed["fields"]["businessType"], "정보동신업 정보통신업")
         self.assertEqual(parsed["fields"]["businessTypeCandidates"], ["정보동신업", "정보통신업"])
         self.assertEqual(parsed["fields"]["businessItem"], "정보동신업 정보통신업")
@@ -77,10 +75,7 @@ class BusinessRegistrationParsingTests(unittest.TestCase):
         self.assertEqual(parsed["fields"]["companyName"], "(주)글로벌데이터로드")
         self.assertEqual(parsed["fields"]["representativeName"], "이상옥")
         self.assertEqual(parsed["fields"]["openingDate"], "2024-06-24")
-        self.assertEqual(
-            parsed["fields"]["businessAddress"],
-            "서울특별시 송파구 오금로46길 41,2층 2404호(가락동)",
-        )
+        # 주소 줄이 업태/종목 경계를 흐리지 않는지도 함께 확인한다.
         self.assertEqual(parsed["fields"]["businessType"], "정보통신업")
         self.assertEqual(parsed["fields"]["businessItem"], "응용 소프트웨어")
 

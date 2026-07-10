@@ -1,5 +1,6 @@
 """요청/이벤트에서 S3 객체 위치를 찾아내고, 객체를 메모리로 읽는다."""
 
+import os
 from urllib.parse import unquote_plus, urlparse
 
 
@@ -67,6 +68,17 @@ def extract_s3_location(event: dict) -> tuple[str, str]:
             return parse_s3_url(value)
 
     raise ValueError("Missing S3 object location. Provide bucket/key, s3.bucket/s3.key, s3Uri, or an S3 event.")
+
+
+def assert_allowed_bucket(bucket: str) -> None:
+    """서버가 지정한 입력 버킷 외의 객체는 읽지 않는다.
+
+    호출자가 준 bucket을 그대로 믿으면 Lambda role이 읽을 수 있는 모든 객체를
+    OCR에 태워 내용을 볼 수 있다. OCR_INPUT_BUCKET을 설정하면 그 버킷만 허용한다.
+    """
+    allowed_bucket = os.getenv("OCR_INPUT_BUCKET")
+    if allowed_bucket and bucket != allowed_bucket:
+        raise ValueError(f"Bucket is not allowed for OCR input: {bucket}")
 
 
 def get_s3_client():

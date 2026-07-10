@@ -13,11 +13,11 @@ from urllib.parse import quote, quote_plus
 REDACTED = "***REDACTED***"
 
 # 값을 몰라도 이름만으로 가릴 수 있는 쿼리 파라미터이다.
+# 이 Lambda는 data.go.kr를 호출하지 않지만, 서버가 넘긴 URL이 로그에 섞일 수 있어 남겨 둔다.
 SECRET_QUERY_PATTERN = re.compile(r"(?i)\b(servicekey)=[^&\s\"'<>]*")
 
 # 환경 변수에 실제로 담기는 비밀값의 이름이다.
 SECRET_ENV_NAMES = (
-    "DATA_GO_KR_SERVICE_KEY",
     "NCLOUD_OCR_SECRET_KEY",
     "NCLOUD_BIZ_OCR_SECRET_KEY",
 )

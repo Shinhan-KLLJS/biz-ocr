@@ -1,7 +1,10 @@
 import io
+import os
 import unittest
+from unittest.mock import patch
 
 from ocr_service.storage.s3 import (
+    assert_allowed_bucket,
     extract_s3_location,
     head_s3_object_size,
     parse_s3_url,
@@ -70,6 +73,23 @@ class S3StorageTests(unittest.TestCase):
 
         self.assertEqual(size, 5)
         self.assertEqual(fake_client.head_calls, [("ocr-bucket", "incoming/file.png")])
+
+
+class AllowedBucketTests(unittest.TestCase):
+    @patch.dict(os.environ, {"OCR_INPUT_BUCKET": "loovi-ocr-input"}, clear=False)
+    def test_configured_bucket_is_allowed(self):
+        assert_allowed_bucket("loovi-ocr-input")
+
+    @patch.dict(os.environ, {"OCR_INPUT_BUCKET": "loovi-ocr-input"}, clear=False)
+    def test_other_buckets_are_rejected(self):
+        # 호출자가 준 버킷을 그대로 믿으면 Lambda role이 읽을 수 있는 모든 객체가 노출된다.
+        with self.assertRaises(ValueError):
+            assert_allowed_bucket("someone-elses-bucket")
+
+    def test_any_bucket_is_allowed_when_the_allowlist_is_not_configured(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OCR_INPUT_BUCKET", None)
+            assert_allowed_bucket("any-bucket")
 
 
 if __name__ == "__main__":
