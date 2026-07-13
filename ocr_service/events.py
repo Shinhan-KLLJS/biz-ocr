@@ -1,44 +1,29 @@
-"""Lambda 이벤트를 해석해 동작을 고르고, API Gateway 형식 응답을 만든다."""
+"""Lambda 이벤트를 해석해 동작을 고른다.
 
-import json
+이 Lambda는 백엔드가 SDK로 직접 invoke한다 (API Gateway를 거치지 않는다).
+API Gateway를 쓰면 동기 호출에 29초 제한이 걸리고, 인증(JWT authorizer)과 CORS를 따로
+관리해야 하며, 인증 없이 열려 있으면 OCR 비용이 남용될 수 있기 때문이다.
+그래서 proxy 응답 봉투({statusCode, body})도 만들지 않고 결과 dict를 그대로 반환한다.
+"""
 
 from ocr_service.ncloud_client import parse_template_ids
 
 
-def make_response(status_code: int, payload: dict) -> dict:
-    return {
-        "statusCode": status_code,
-        "headers": {"Content-Type": "application/json; charset=utf-8"},
-        "body": json.dumps(payload, ensure_ascii=False),
-    }
-
-
 def normalize_event(event) -> dict:
-    if not isinstance(event, dict):
-        return {}
-
-    body = event.get("body")
-    if isinstance(body, str) and body.strip():
-        try:
-            body_payload = json.loads(body)
-        except json.JSONDecodeError:
-            return event
-        if isinstance(body_payload, dict):
-            return {**event, **body_payload}
-
-    return event
+    return event if isinstance(event, dict) else {}
 
 
 def resolve_operation(event: dict) -> str:
-    """이 Lambda는 OCR만 수행한다. 그 외 입력은 모두 unsupported로 돌린다."""
-    operation = event.get("operation") or event.get("action")
-    if operation:
-        return normalize_operation(operation)
+    """이 Lambda는 OCR만 수행한다. 그 외 입력은 모두 unsupported로 돌린다.
 
-    path = extract_request_path(event)
-    if path.endswith("/ocr") or path.endswith("/ocr/"):
-        return "ocr"
-    return "unsupported"
+    <b>operation/action을 반드시 요구한다.</b> bucket/key만 있는 입력을 OCR로 받아주면
+    S3 업로드 이벤트로 Lambda가 트리거되도록 잘못 설정했을 때 그대로 실행돼 버린다 -
+    OCR 결과를 돌려받을 호출자가 없어 비용만 쓰고 결과는 버려진다.
+    """
+    operation = event.get("operation") or event.get("action")
+    if not operation:
+        return "unsupported"
+    return normalize_operation(operation)
 
 
 def normalize_operation(operation: object) -> str:
@@ -46,12 +31,6 @@ def normalize_operation(operation: object) -> str:
     if value in {"ocr", "extract", "parse"}:
         return "ocr"
     return "unsupported"
-
-
-def extract_request_path(event: dict) -> str:
-    request_context = event.get("requestContext") or {}
-    http_context = request_context.get("http") or {}
-    return str(event.get("rawPath") or event.get("path") or http_context.get("path") or "")
 
 
 def parse_event_template_ids(event: dict) -> list[int]:

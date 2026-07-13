@@ -59,7 +59,7 @@ class HandlerErrorResponseTests(unittest.TestCase):
     )
     @patch("ocr_service.ncloud_client.requests.post")
     @patch("ocr_service.lambda_handler.load_s3_document")
-    def test_ocr_failure_returns_502_without_leaking_the_secret(self, mock_load_document, mock_post):
+    def test_ocr_failure_is_reported_without_leaking_the_secret(self, mock_load_document, mock_post):
         mock_load_document.return_value = DocumentSource(name="file.png", content=b"image")
         # requests 예외 메시지에는 요청 URL과 헤더 값이 섞여 들어올 수 있다.
         mock_post.side_effect = requests.ConnectionError(
@@ -69,10 +69,10 @@ class HandlerErrorResponseTests(unittest.TestCase):
 
         response = handler({"action": "ocr", "bucket": "ocr-bucket", "key": "incoming/file.png"}, None)
 
-        # 외부 API 장애는 이 서비스의 결함이 아니므로 502로 구분해 올린다.
-        self.assertEqual(response["statusCode"], 502)
-        self.assertNotIn(OCR_SECRET_KEY, response["body"])
-        self.assertEqual(json.loads(response["body"])["error"], "ExternalServiceError")
+        # 시크릿이 응답 어디에도 남아 있으면 안 된다. 봉투를 없앴어도 이 보장은 그대로다.
+        self.assertNotIn(OCR_SECRET_KEY, json.dumps(response, ensure_ascii=False))
+        self.assertEqual(response["error"], "ExternalServiceError")
+        self.assertIn("***REDACTED***", response["message"])
 
 
 if __name__ == "__main__":

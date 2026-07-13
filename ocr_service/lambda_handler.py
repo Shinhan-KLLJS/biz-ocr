@@ -2,8 +2,12 @@
 
 진위 확인과 최종 승인 판정은 이 Lambda가 하지 않는다.
 서버가 수행하며 규칙은 docs/server-verification-spec.md에 있다.
+
+백엔드가 SDK로 직접 invoke한다. API Gateway proxy 봉투({statusCode, body})를 만들지 않고
+결과 dict를 그대로 반환한다 - 이유는 events.py 참고.
 """
 
+import logging
 import os
 
 from ocr_service.config import load_dotenv
@@ -13,9 +17,7 @@ from ocr_service.documents import (
     object_key_to_file_name,
     validate_document_size,
 )
-from ocr_service.errors import ExternalServiceError
 from ocr_service.events import (
-    make_response,
     normalize_event,
     parse_event_template_ids,
     resolve_operation,
@@ -35,6 +37,10 @@ from ocr_service.storage.s3 import (
 )
 
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
 UNSUPPORTED_OPERATION_MESSAGE = (
     "operation must be 'ocr'. "
     "S3 event triggers are not supported because the OCR result has no caller to return to."
@@ -42,24 +48,26 @@ UNSUPPORTED_OPERATION_MESSAGE = (
 
 
 def handler(event, context):
+    """성공하면 응답 계약 6개 필드를, 실패하면 {"error", "message"}를 돌려준다.
+
+    <b>실패해도 예외를 던지지 않는다.</b> 백엔드는 OCR 실패를 업로드 실패로 취급하지 않고
+    모든 필드를 null로 채워 사용자가 직접 입력하게 한다 (team-creation-api-spec.md 8절).
+    즉 여기서의 실패는 사용자 흐름을 막지 않으므로, 호출자가 파싱하기 쉬운 형태로 돌려주고
+    원인은 CloudWatch에 남긴다.
+    """
     load_dotenv()
     event = normalize_event(event)
 
     try:
-        if resolve_operation(event) == "ocr":
-            return handle_business_registration_ocr(event)
-        # S3 업로드 이벤트에는 operation도 경로도 없어 여기로 온다.
-        return make_response(400, {"error": "UnsupportedOperation", "message": UNSUPPORTED_OPERATION_MESSAGE})
-    except ValueError as exc:
-        # 입력 위치 누락, 미지원 확장자, 파일 크기 초과처럼 호출자가 고칠 수 있는 오류다.
-        return make_response(400, {"error": type(exc).__name__, "message": redact_secrets(exc)})
-    except ExternalServiceError as exc:
-        # Ncloud OCR 장애는 이 서비스의 결함이 아니므로 502로 구분한다.
-        # ExternalServiceError는 RuntimeError 하위 클래스라 Exception보다 먼저 잡아야 한다.
-        return make_response(502, {"error": type(exc).__name__, "message": redact_secrets(exc)})
+        if resolve_operation(event) != "ocr":
+            raise ValueError(UNSUPPORTED_OPERATION_MESSAGE)
+        return handle_business_registration_ocr(event)
     except Exception as exc:
         # 외부 API 예외 메시지에는 시크릿 키가 실린 요청 URL이 들어올 수 있다.
-        return make_response(500, {"error": type(exc).__name__, "message": redact_secrets(exc)})
+        # 응답과 로그 어느 쪽으로도 새어 나가지 않게 가린 뒤에만 내보낸다.
+        message = redact_secrets(exc)
+        logger.error("OCR failed: %s: %s", type(exc).__name__, message)
+        return {"error": type(exc).__name__, "message": message}
 
 
 lambda_handler = handler
@@ -67,7 +75,19 @@ lambda_handler = handler
 
 def handle_business_registration_ocr(event: dict) -> dict:
     parsed = run_business_registration_ocr(event)
-    return make_response(200, build_business_registration_ocr_response(parsed))
+    log_parse_warnings(parsed)
+    return build_business_registration_ocr_response(parsed)
+
+
+def log_parse_warnings(parsed: dict) -> None:
+    """파서 경고는 응답에 넣지 않는다 (계약은 6개 필드로 고정이다). 대신 CloudWatch에 남긴다.
+
+    어떤 필드를 왜 못 읽었는지는 운영에서 OCR 품질을 볼 때 필요한데, 백엔드는 이 값을
+    쓰지 않으므로 응답 계약을 늘릴 이유가 없다.
+    """
+    key = (parsed.get("source") or {}).get("key")
+    for warning in parsed.get("warnings") or []:
+        logger.warning("OCR parse warning (key=%s): %s", key, warning)
 
 
 def load_s3_document(bucket: str, key: str) -> DocumentSource:

@@ -1,61 +1,56 @@
-"""OCR 파싱 결과를 프론트가 검토/수정할 수 있는 최소 응답으로 줄인다."""
+"""OCR 파싱 결과를 백엔드가 의존하는 응답 계약으로 줄인다."""
 
 import re
 
-from ocr_service.extractors.business_registration.constants import REQUIRED_BUSINESS_FIELDS
 
-
-# 사업장주소는 저장하지도 검증하지도 않는 개인정보라 응답에 넣지 않는다.
-CLIENT_EDITABLE_FIELDS = (
-    "companyName",
-    "representativeName",
-    "businessRegistrationNumber",
-    "openingDate",
-    "businessType",
-    "businessItem",
-    "businessTypeCandidates",
-    "businessItemsRaw",
-)
+# 백엔드와 고정한 응답 계약 (backend/docs/team-creation-api-spec.md 8절).
+# 왼쪽은 파서 내부 필드명, 오른쪽은 응답 필드명이다.
+#
+# 이 6개 키는 인식에 실패해도 null로 항상 존재한다. 백엔드가 키 유무를 확인하지 않고
+# 값만 보면 되도록 하기 위해서다.
+#
+# 사업장주소는 넣지 않는다. DB에 저장하지도 진위확인에 쓰지도 않는 개인정보다.
+PARSED_FIELD_TO_RESPONSE_FIELD = {
+    "companyName": "companyName",
+    "representativeName": "representativeName",
+    "businessRegistrationNumber": "businessNumber",
+    "openingDate": "businessOpeningDate",
+    "businessType": "businessType",
+    "businessItem": "businessItem",
+}
 
 
 def build_business_registration_ocr_response(parsed: dict) -> dict:
-    """프론트가 OCR 추정값을 검토/수정할 수 있는 응답을 만든다."""
+    """사용자가 화면에서 검토·수정할 추정값. 판정 결과는 넣지 않는다 (서버 몫이다)."""
     fields = parsed.get("fields") or {}
-    business = select_editable_business_fields(fields)
-    missing_fields = [
-        key
-        for key in REQUIRED_BUSINESS_FIELDS
-        if not business.get(key)
-    ]
-    response = {
-        "status": "ocr_completed",
-        "documentType": parsed.get("documentType", "businessRegistrationCertificate"),
-        "business": business,
-        "missingFields": missing_fields,
-        "warnings": parsed.get("warnings", []),
-    }
-    if parsed.get("source"):
-        response["source"] = parsed["source"]
-    return response
-
-
-def select_editable_business_fields(fields: dict) -> dict:
     return {
-        key: normalize_ocr_response_field(key, fields.get(key))
-        for key in CLIENT_EDITABLE_FIELDS
-        if key in fields
+        response_key: normalize_response_field(response_key, fields.get(parsed_key))
+        for parsed_key, response_key in PARSED_FIELD_TO_RESPONSE_FIELD.items()
     }
 
 
-def normalize_ocr_response_field(key: str, value: object) -> object:
-    if key == "businessRegistrationNumber":
-        return normalize_digit_field(value, 10)
-    if key == "openingDate":
-        return normalize_digit_field(value, 8)
-    return value
+def normalize_response_field(key: str, value: object) -> object:
+    if key == "businessNumber":
+        return normalize_digits(value, 10)
+    if key == "businessOpeningDate":
+        return format_opening_date(value)
+    # 빈 문자열은 "인식 실패"와 같은 뜻이므로 null로 통일한다.
+    return value or None
 
 
-def normalize_digit_field(value: object, expected_length: int) -> str | None:
-    """서버가 그대로 data.go.kr에 보낼 수 있도록 구분자를 제거한다."""
+def format_opening_date(value: object) -> str | None:
+    """개업일을 yyyy-MM-dd로 맞춘다.
+
+    OCR 원문은 '2024. 6. 24.', '2024년 6월 24일'처럼 제각각이라 숫자만 남겨 8자리인지 본다.
+    8자리가 아니면 서버가 진위확인에 쓸 수 없으므로 null로 내려 사용자가 직접 입력하게 한다.
+    """
+    digits = normalize_digits(value, 8)
+    if not digits:
+        return None
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+
+
+def normalize_digits(value: object, expected_length: int) -> str | None:
+    """구분자를 제거해 서버가 그대로 국세청에 보낼 수 있는 형태로 만든다."""
     digits = re.sub(r"\D", "", str(value or ""))
     return digits if len(digits) == expected_length else None
