@@ -150,6 +150,19 @@ OCR 응답은 **사용자가 수정하기 전의 추정값**입니다. 서버는
 dist\lambda-deploy.zip
 ```
 
+배포 전에는 실제 Lambda 환경 변수를 설정한 셸에서 아래 검사를 실행합니다. 시크릿 값은
+출력하지 않고 URL, 필수 키, 버킷, 수치 형식과 ZIP 구성만 검사합니다.
+
+```powershell
+python scripts\check_lambda_deployment.py `
+  --production `
+  --package dist\lambda-deploy.zip
+```
+
+`package_lambda.ps1`는 ZIP 생성 뒤 필수 파일과 Windows 바이너리 유입 여부를 자동으로
+검사합니다. 배포 전 검사는 `OCR_INPUT_BUCKET`도 필수로 확인하므로 운영 버킷 설정 누락을
+먼저 발견할 수 있습니다.
+
 Lambda 설정:
 
 | 항목 | 값 |

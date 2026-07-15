@@ -23,6 +23,11 @@ from ocr_service.events import (
     resolve_operation,
 )
 from ocr_service.ncloud_client import call_business_license_ocr, call_ocr
+from ocr_service.observability import (
+    log_invocation_completed,
+    log_invocation_failed,
+    log_invocation_started,
+)
 from ocr_service.redaction import redact_secrets
 from ocr_service.responses.business_registration import build_business_registration_ocr_response
 from ocr_service.services.business_registration import (
@@ -57,16 +62,19 @@ def handler(event, context):
     """
     load_dotenv()
     event = normalize_event(event)
+    log_invocation_started(logger, context, event)
 
     try:
         if resolve_operation(event) != "ocr":
             raise ValueError(UNSUPPORTED_OPERATION_MESSAGE)
-        return handle_business_registration_ocr(event)
+        response = handle_business_registration_ocr(event)
+        log_invocation_completed(logger, context)
+        return response
     except Exception as exc:
         # 외부 API 예외 메시지에는 시크릿 키가 실린 요청 URL이 들어올 수 있다.
         # 응답과 로그 어느 쪽으로도 새어 나가지 않게 가린 뒤에만 내보낸다.
         message = redact_secrets(exc)
-        logger.error("OCR failed: %s: %s", type(exc).__name__, message)
+        log_invocation_failed(logger, context, exc, message)
         return {"error": type(exc).__name__, "message": message}
 
 

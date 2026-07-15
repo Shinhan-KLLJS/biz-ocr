@@ -28,6 +28,10 @@ New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
     --only-binary=:all: `
     --upgrade
 
+if ($LASTEXITCODE -ne 0) {
+    throw "Lambda dependency installation failed (exit code: $LASTEXITCODE)."
+}
+
 Copy-Item -Path (Join-Path $repoRoot "main.py") -Destination $buildPath
 Copy-Item -Path (Join-Path $repoRoot "ocr_service") -Destination $buildPath -Recurse
 
@@ -36,4 +40,8 @@ if (Test-Path $outputFile) {
 }
 
 Compress-Archive -Path (Join-Path $buildPath "*") -DestinationPath $outputFile -Force
+& $Python (Join-Path $repoRoot "scripts\check_lambda_deployment.py") --skip-env --package $outputFile
+if ($LASTEXITCODE -ne 0) {
+    throw "Lambda package validation failed (exit code: $LASTEXITCODE)."
+}
 Write-Host "Created $outputFile"
