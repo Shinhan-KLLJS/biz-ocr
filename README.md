@@ -150,6 +150,16 @@ OCR 응답은 **사용자가 수정하기 전의 추정값**입니다. 서버는
 dist\lambda-deploy.zip
 ```
 
+기존에 검증된 Linux 의존성 ZIP을 유지하면서 현재 소스만 빠르게 교체해야 하면 아래를
+사용합니다. 이 경우 생성되는 `lambda-deploy-current.zip`은 기준 ZIP의 의존성을 그대로
+사용하므로, 기준 ZIP이 현재 Runtime과 호환되는지 먼저 확인해야 합니다.
+
+```powershell
+python scripts\refresh_lambda_package.py `
+  --base-zip dist\lambda-deploy.zip `
+  --output dist\lambda-deploy-current.zip
+```
+
 배포 전에는 실제 Lambda 환경 변수를 설정한 셸에서 아래 검사를 실행합니다. 시크릿 값은
 출력하지 않고 URL, 필수 키, 버킷, 수치 형식과 ZIP 구성만 검사합니다.
 
@@ -233,9 +243,53 @@ python main.py --help
 python scripts\check_ocr_response_from_outputs.py
 ```
 
-## 8. Verification
+## 8. 내부 검증
+
+### 8.1 외부 호출 없는 단위·회귀 테스트
 
 ```powershell
-python -m compileall main.py ocr_service tests
+python -m compileall main.py ocr_service scripts tests
 python -m unittest discover
 ```
+
+`unittest`에는 Lambda 응답 6개 필드, 시크릿 마스킹 로그, 배포 사전검사와
+`outputs/document_raw`의 저장된 사업자등록증 6건 회귀 검사가 포함됩니다. Ncloud, AWS,
+data.go.kr을 호출하지 않습니다.
+
+### 8.2 저장된 OCR 결과 확인
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+python scripts\check_ocr_response_from_outputs.py
+```
+
+저장된 Document OCR 원본을 다시 파싱해 각 파일의 백엔드 응답 6개 필드를 출력합니다.
+외부 OCR 호출 없이 파서 결과를 눈으로 확인할 때 사용합니다.
+
+### 8.3 ZIP 검사
+
+```powershell
+python scripts\check_lambda_deployment.py `
+  --skip-env `
+  --package dist\lambda-deploy-current.zip
+```
+
+ZIP 안의 handler, `requests`, `boto3`와 Windows 전용 바이너리 유입 여부만 확인합니다.
+운영 환경 변수까지 같이 확인하려면 `--skip-env` 대신 `--production`을 사용합니다.
+
+### 8.4 Lambda 콘솔 통합 테스트
+
+Lambda에 실제 환경 변수와 S3 권한이 설정된 뒤에만 실행합니다. 콘솔 테스트 이벤트는
+아래와 같습니다.
+
+```json
+{
+  "action": "ocr",
+  "bucket": "실제-입력-버킷",
+  "key": "team-registrations/실제-사업자등록증.png"
+}
+```
+
+성공하면 proxy 봉투 없이 `companyName`, `representativeName`, `businessNumber`,
+`businessOpeningDate`, `businessType`, `businessItem` 6개 필드가 최상위에 반환됩니다.
+CloudWatch에서는 같은 `request_id`의 시작·성공 또는 실패 로그를 확인합니다.
